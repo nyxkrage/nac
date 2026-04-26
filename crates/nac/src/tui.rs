@@ -154,6 +154,7 @@ enum PanelId {
     Workspace,
     Tools,
     Worksets,
+    FileChanges,
 }
 
 #[derive(Debug, Clone)]
@@ -404,9 +405,14 @@ struct SelectionState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FocusPanel {
+    Prompt,
     Events,
+    Threads,
     Response,
     PreviousResponse,
+    Tools,
+    Worksets,
+    FileChanges,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -489,6 +495,7 @@ impl App {
         panel_scrolls.insert(PanelId::Workspace, 0);
         panel_scrolls.insert(PanelId::Tools, 0);
         panel_scrolls.insert(PanelId::Worksets, 0);
+        panel_scrolls.insert(PanelId::FileChanges, 0);
 
         let mut app = Self {
             metadata,
@@ -634,7 +641,15 @@ impl App {
                 AppAction::None
             }
             KeyEvent {
-                code: KeyCode::Char('e'),
+                code: KeyCode::Char('1'),
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.toggle_focus_panel(FocusPanel::Prompt);
+                AppAction::None
+            }
+            KeyEvent {
+                code: KeyCode::Char('2'),
                 modifiers,
                 ..
             } if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -642,7 +657,15 @@ impl App {
                 AppAction::None
             }
             KeyEvent {
-                code: KeyCode::Char('r'),
+                code: KeyCode::Char('3'),
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.toggle_focus_panel(FocusPanel::Threads);
+                AppAction::None
+            }
+            KeyEvent {
+                code: KeyCode::Char('4'),
                 modifiers,
                 ..
             } if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -650,11 +673,35 @@ impl App {
                 AppAction::None
             }
             KeyEvent {
-                code: KeyCode::Char('p'),
+                code: KeyCode::Char('5'),
                 modifiers,
                 ..
             } if modifiers.contains(KeyModifiers::CONTROL) => {
                 self.toggle_focus_panel(FocusPanel::PreviousResponse);
+                AppAction::None
+            }
+            KeyEvent {
+                code: KeyCode::Char('6'),
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.toggle_focus_panel(FocusPanel::Tools);
+                AppAction::None
+            }
+            KeyEvent {
+                code: KeyCode::Char('7'),
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.toggle_focus_panel(FocusPanel::Worksets);
+                AppAction::None
+            }
+            KeyEvent {
+                code: KeyCode::Char('8'),
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.toggle_focus_panel(FocusPanel::FileChanges);
                 AppAction::None
             }
             KeyEvent {
@@ -898,8 +945,14 @@ impl App {
 
     fn primary_scroll_panel(&self) -> PanelId {
         match self.screen {
+            ScreenMode::Focused(FocusPanel::Prompt) => PanelId::Prompt,
             ScreenMode::Focused(FocusPanel::Events) => PanelId::Events,
+            ScreenMode::Focused(FocusPanel::Threads) => PanelId::Threads,
+            ScreenMode::Focused(FocusPanel::Response) => PanelId::Response,
             ScreenMode::Focused(FocusPanel::PreviousResponse) => PanelId::PreviousResponse,
+            ScreenMode::Focused(FocusPanel::Tools) => PanelId::Tools,
+            ScreenMode::Focused(FocusPanel::Worksets) => PanelId::Worksets,
+            ScreenMode::Focused(FocusPanel::FileChanges) => PanelId::FileChanges,
             _ => PanelId::Response,
         }
     }
@@ -1287,11 +1340,16 @@ impl App {
 
         if let ScreenMode::Focused(panel) = self.screen {
             match panel {
+                FocusPanel::Prompt => self.render_focused_prompt(frame, sections[1]),
                 FocusPanel::Events => self.render_focused_events(frame, sections[1]),
+                FocusPanel::Threads => self.render_focused_threads(frame, sections[1]),
                 FocusPanel::Response => self.render_focused_response(frame, sections[1]),
                 FocusPanel::PreviousResponse => {
                     self.render_focused_previous_response(frame, sections[1])
                 }
+                FocusPanel::Tools => self.render_focused_tools(frame, sections[1]),
+                FocusPanel::Worksets => self.render_focused_worksets(frame, sections[1]),
+                FocusPanel::FileChanges => self.render_focused_file_changes(frame, sections[1]),
             }
             self.render_composer(frame, sections[2]);
             if self.help_visible {
@@ -1348,6 +1406,26 @@ impl App {
 
     fn render_focused_previous_response(&mut self, frame: &mut ratatui::Frame, area: Rect) {
         self.render_previous_response_panel(frame, area);
+    }
+
+    fn render_focused_prompt(&mut self, frame: &mut ratatui::Frame, area: Rect) {
+        self.render_prompt_panel(frame, area);
+    }
+
+    fn render_focused_threads(&mut self, frame: &mut ratatui::Frame, area: Rect) {
+        self.render_threads_panel(frame, area);
+    }
+
+    fn render_focused_tools(&mut self, frame: &mut ratatui::Frame, area: Rect) {
+        self.render_tools_panel(frame, area);
+    }
+
+    fn render_focused_worksets(&mut self, frame: &mut ratatui::Frame, area: Rect) {
+        self.render_worksets_panel(frame, area);
+    }
+
+    fn render_focused_file_changes(&mut self, frame: &mut ratatui::Frame, area: Rect) {
+        self.render_file_changes_panel(frame, area);
     }
 
     fn render_too_small(&mut self, frame: &mut ratatui::Frame, area: Rect) {
@@ -1699,8 +1777,8 @@ impl App {
             ])
             .split(area);
 
-        self.render_threads_panel(frame, sections[0]);
-        self.render_workspace_panel(frame, sections[1]);
+        self.render_workspace_panel(frame, sections[0]);
+        self.render_threads_panel(frame, sections[1]);
         self.render_response_panel(frame, sections[2]);
         self.render_previous_response_panel(frame, sections[3]);
     }
@@ -1725,7 +1803,7 @@ impl App {
             Some(prompt) => split_preserving_empty(prompt),
             None => vec!["Waiting for the first orchestrator prompt.".to_string()],
         };
-        self.render_selectable_panel(frame, area, PanelId::Prompt, "PROMPT", lines);
+        self.render_selectable_panel(frame, area, PanelId::Prompt, "PROMPT - 1", lines);
     }
 
     fn render_workspace_panel(&mut self, frame: &mut ratatui::Frame, area: Rect) {
@@ -1784,13 +1862,13 @@ impl App {
             ]),
             Line::from(vec![
                 Span::styled(
-                    "Ctrl-E / Ctrl-R / Ctrl-P",
+                    "Ctrl+1-8",
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    " focus events / response / previous",
+                    " focus panels (Prompt/Events/Threads/Response/Previous/Tools/Worksets/FileChanges)",
                     Style::default().fg(Color::White),
                 ),
             ]),
@@ -1897,7 +1975,7 @@ impl App {
             }
         }
 
-        self.render_scrollable_lines_panel(frame, area, PanelId::Threads, "THREADS", lines);
+        self.render_scrollable_lines_panel(frame, area, PanelId::Threads, "THREADS - 3", lines);
     }
 
     fn render_events_panel(&mut self, frame: &mut ratatui::Frame, area: Rect) {
@@ -1935,7 +2013,7 @@ impl App {
         let runtime = format_runtime(self.displayed_run_duration());
         let title = panel_title_segments(vec![
             Span::styled(
-                "RESPONSE".to_string(),
+                "RESPONSE - 4".to_string(),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -1962,7 +2040,7 @@ impl App {
             frame,
             area,
             PanelId::PreviousResponse,
-            "PREVIOUS RESPONSE",
+            "PREVIOUS - 5",
             lines,
         );
     }
@@ -1975,7 +2053,7 @@ impl App {
         };
         panel_title_segments(vec![
             Span::styled(
-                "EVENTS".to_string(),
+                "EVENTS - 2".to_string(),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -2048,7 +2126,7 @@ impl App {
             lines.push(Line::from("No tool activity yet."));
         }
 
-        render_lines_panel(frame, area, "TOOLS", lines);
+        render_lines_panel(frame, area, "TOOLS - 6", lines);
     }
 
     fn render_worksets_panel(&mut self, frame: &mut ratatui::Frame, area: Rect) {
@@ -2123,7 +2201,7 @@ impl App {
             }
         }
 
-        self.render_scrollable_lines_panel(frame, area, PanelId::Worksets, "WORKSETS", lines);
+        self.render_scrollable_lines_panel(frame, area, PanelId::Worksets, "WORKSETS - 7", lines);
     }
 
     fn render_file_changes_panel(&mut self, frame: &mut ratatui::Frame, area: Rect) {
@@ -2164,7 +2242,7 @@ impl App {
             }
         }
 
-        render_lines_panel(frame, area, "FILE CHANGES", lines);
+        render_lines_panel(frame, area, "FILE CHANGES - 8", lines);
     }
 
     fn render_composer(&mut self, frame: &mut ratatui::Frame, area: Rect) {
@@ -3575,7 +3653,11 @@ fn classify_tool_status(is_error: bool, preview: &str) -> ToolStatus {
 fn panel_is_selectable(panel: PanelId) -> bool {
     matches!(
         panel,
-        PanelId::Prompt | PanelId::Response | PanelId::PreviousResponse | PanelId::Workspace
+        PanelId::Prompt
+            | PanelId::Response
+            | PanelId::PreviousResponse
+            | PanelId::Workspace
+            | PanelId::FileChanges
     )
 }
 
@@ -5483,29 +5565,29 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_e_toggles_events_focus() {
+    fn ctrl_2_toggles_events_focus() {
         let dir = temp_dir("events-focus");
         let mut app = App::new(metadata_for(&dir), &[], false);
 
-        let action = app.handle_key_event(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
+        let action = app.handle_key_event(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::CONTROL));
         assert!(matches!(action, AppAction::None));
         assert!(matches!(
             app.screen,
             ScreenMode::Focused(FocusPanel::Events)
         ));
 
-        let action = app.handle_key_event(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
+        let action = app.handle_key_event(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::CONTROL));
         assert!(matches!(action, AppAction::None));
         assert_eq!(app.screen, ScreenMode::Dashboard);
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn ctrl_r_focuses_response_and_escape_returns_dashboard() {
+    fn ctrl_4_focuses_response_and_escape_returns_dashboard() {
         let dir = temp_dir("response-focus");
         let mut app = App::new(metadata_for(&dir), &[], false);
 
-        let action = app.handle_key_event(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        let action = app.handle_key_event(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::CONTROL));
         assert!(matches!(action, AppAction::None));
         assert!(matches!(
             app.screen,
@@ -5519,11 +5601,11 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_p_focuses_previous_response_and_escape_returns_dashboard() {
+    fn ctrl_5_focuses_previous_response_and_escape_returns_dashboard() {
         let dir = temp_dir("previous-response-focus");
         let mut app = App::new(metadata_for(&dir), &[], false);
 
-        let action = app.handle_key_event(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        let action = app.handle_key_event(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::CONTROL));
         assert!(matches!(action, AppAction::None));
         assert!(matches!(
             app.screen,
