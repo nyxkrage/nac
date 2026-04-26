@@ -466,6 +466,7 @@ struct App {
     screen: ScreenMode,
     session_picker: SessionPickerState,
     life_field: LifeField,
+    current_prompt: String,
 }
 
 impl App {
@@ -518,6 +519,7 @@ impl App {
             screen: ScreenMode::Dashboard,
             session_picker: SessionPickerState::default(),
             life_field: LifeField::default(),
+            current_prompt: String::new(),
         };
 
         app.hydrate_threads_from_store();
@@ -1297,7 +1299,18 @@ impl App {
     }
 
     fn reset_life(&mut self) {
-        self.life_field = LifeField::default();
+        // Get the panel size from the last render or use defaults
+        let width = self
+            .panel_views
+            .get(&PanelId::Prompt)
+            .map(|p| p.inner.width as usize * 2)
+            .unwrap_or(160);
+        let height = self
+            .panel_views
+            .get(&PanelId::Prompt)
+            .map(|p| p.inner.height as usize * 4)
+            .unwrap_or(96);
+        self.life_field = LifeField::from_seed(&self.current_prompt, width, height);
     }
 
     fn advance_life(&mut self) {
@@ -2780,6 +2793,7 @@ fn submit_prompt(
 ) -> Result<()> {
     let agent_prompt = expand_user_prompt(&prompt);
     app.note_prompt_submitted(&prompt);
+    app.current_prompt = prompt;
     app.clear_composer();
     app.send_state = SendState::Pending;
     app.pending_error_reported = false;
