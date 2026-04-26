@@ -44,22 +44,37 @@ pub struct LifeConfig {
     pub mutation_chance: f32,
     /// Initial soup density (0.015-0.06 = 1.5-6%)
     pub initial_soup_density: f32,
+    /// How often to check for pruning (generations)
+    pub prune_interval: u64,
+    /// Zone density threshold that triggers pruning (0.0-1.0)
+    pub prune_density_threshold: f32,
+    /// Percentage of cells to remove from dense zones (0.0-1.0)
+    pub prune_percentage: f32,
+    /// How much to favor center zones (0.0 = no bias, 1.0 = strong center bias)
+    pub center_bias: f32,
+    /// How often to rebalance cell distribution (generations)
+    pub rebalance_interval: u64,
 }
 
 impl Default for LifeConfig {
     fn default() -> Self {
         Self {
             heat_decay: 0.98,
-            zone_width: 16,
-            zone_height: 16,
-            check_interval: 16,
-            target_activity: 0.03,
-            injection_gain: 20.0,
-            max_injection_chance: 0.15,
-            zone_cooldown_min: 300,
-            zone_cooldown_max: 1500,
+            zone_width: 8,  // Was 16 - smaller zones for better variance measurement
+            zone_height: 8, // Was 16
+            check_interval: 64,
+            target_activity: 0.005, // Was 0.008 - even lower (0.5%)
+            injection_gain: 5.0,
+            max_injection_chance: 0.05,
+            zone_cooldown_min: 800,
+            zone_cooldown_max: 4000,
             mutation_chance: 0.05,
-            initial_soup_density: 0.03,
+            initial_soup_density: 0.01,    // Was 0.015 - 1% initial
+            prune_interval: 30,            // Moderate pruning frequency
+            prune_density_threshold: 0.25, // Prune zones above 25% density
+            prune_percentage: 0.45,        // Remove 45% from dense zones
+            center_bias: 0.3,              // Moderate center bias to counteract edge effects
+            rebalance_interval: 100,       // Rebalance every 100 generations
         }
     }
 }
@@ -75,6 +90,8 @@ pub struct ZoneStats {
     pub cooldown: u32,
     /// Count of cells that changed this generation.
     pub changed_count: usize,
+    /// Generation when this zone was last injected (0 = never).
+    pub last_injection_generation: u64,
 }
 
 impl ZoneStats {
@@ -376,24 +393,49 @@ impl LifeField {
             self.place_pattern(pattern, &placement);
         }
 
-        // 3. Add moving patterns (gliders, LWSS)
+        // 3. Add moving patterns (gliders, LWSS) in balanced pairs to cancel drift
+        // Place patterns in mirrored pairs: (x, y) and (width-x, height-y) with opposite rotations
+        // This ensures left/right and up/down movement cancel out
         let moving = [&GLIDER_PATTERN, &LWSS_PATTERN];
-        let num_moving = self.rng.random_range(3..=7);
-        for _ in 0..num_moving {
-            let pattern = moving.choose(&mut self.rng).unwrap();
-            let x = self.rng.random_range(0..width);
-            let y = self.rng.random_range(0..height);
-            let rotation = self.rng.random_range(0..4);
-            let flip = self.rng.random_bool(0.5);
+        let num_pairs = self.rng.random_range(2..=4); // 2-4 pairs = 4-8 total patterns
 
-            let placement = PatternPlacement {
+        for _ in 0..num_pairs {
+            let pattern = moving.choose(&mut self.rng).unwrap();
+
+            // Random position for first pattern
+            let x1 = self.rng.random_range(0..width);
+            let y1 = self.rng.random_range(0..height);
+            // Random rotation for first pattern
+            let rot1 = self.rng.random_range(0..4);
+            let flip1 = self.rng.random_bool(0.5);
+
+            // Mirrored position for second pattern (opposite side of torus)
+            let x2 = (width - x1) % width;
+            let y2 = (height - y1) % height;
+            // Opposite rotation to cancel movement direction
+            // rot2 = (rot1 + 2) % 4 gives opposite direction for both gliders and LWSS
+            let rot2 = (rot1 + 2) % 4;
+            let flip2 = flip1; // Same flip to maintain symmetry
+
+            // Place first pattern
+            let placement1 = PatternPlacement {
                 pattern: **pattern,
-                dx: x as isize,
-                dy: y as isize,
-                rotation,
-                flip,
+                dx: x1 as isize,
+                dy: y1 as isize,
+                rotation: rot1,
+                flip: flip1,
             };
-            self.place_pattern(pattern, &placement);
+            self.place_pattern(pattern, &placement1);
+
+            // Place mirrored pattern with opposite rotation
+            let placement2 = PatternPlacement {
+                pattern: **pattern,
+                dx: x2 as isize,
+                dy: y2 as isize,
+                rotation: rot2,
+                flip: flip2,
+            };
+            self.place_pattern(pattern, &placement2);
         }
 
         // 4. Add a few small random blobs (4x4 to 6x6)
@@ -515,6 +557,14 @@ impl LifeField {
 
         // Maybe inject new patterns
         self.maybe_inject();
+
+        // Periodically rebalance cell distribution
+        self.rebalance();
+
+        // Prune dense areas periodically
+        if self.generation % self.config.prune_interval == 0 {
+            self.prune_dense_areas();
+        }
     }
 
     /// Renders the field as a vector of ratatui Lines using Braille characters.
@@ -667,7 +717,7 @@ impl LifeField {
                     }
                 }
 
-                zone.heat = total_heat / zone_area as f32;
+                zone.heat = (total_heat / zone_area as f32).min(5.0); // Cap at 5.0 for better normalization
                 zone.density = live_cells as f32 / zone_area as f32;
                 zone.changed_count = changed_cells;
             }
@@ -701,8 +751,9 @@ impl LifeField {
                     continue;
                 }
 
-                // Calculate coldness (1.0 = coldest)
-                let coldness = 1.0 - zone.heat.min(1.0);
+                // Calculate coldness (1.0 = coldest, 0.0 = hottest)
+                // Heat is capped at 5.0, so normalize to [0, 1]
+                let coldness = 1.0 - (zone.heat / 5.0).min(1.0);
 
                 // Calculate neighbor heat (prefer cold zones near warm zones)
                 let neighbor_heat = self.get_neighbor_zone_heat(zx, zy, zone_cols, zone_rows);
@@ -716,7 +767,16 @@ impl LifeField {
                     1.0 - (zone.density - 0.4).abs() // Peak at 0.4 density
                 };
 
-                let weight = coldness * (0.5 + neighbor_heat * 0.5) * density_suitability;
+                // Calculate center bias (favor zones near center)
+                let center_x = (zone_cols - 1) as f32 / 2.0;
+                let center_y = (zone_rows - 1) as f32 / 2.0;
+                let dist_from_center =
+                    ((zx as f32 - center_x).powi(2) + (zy as f32 - center_y).powi(2)).sqrt();
+                let max_dist = ((center_x.powi(2) + center_y.powi(2)).sqrt()).max(1.0);
+                let center_factor = 1.0 - (dist_from_center / max_dist) * self.config.center_bias;
+
+                let weight =
+                    coldness * (0.5 + neighbor_heat * 0.5) * density_suitability * center_factor;
 
                 if weight > 0.01 {
                     weights.push((zone_idx, weight));
@@ -745,7 +805,7 @@ impl LifeField {
         Some(last_idx)
     }
 
-    /// Get average heat of neighboring zones
+    /// Get average heat of neighboring zones (non-wrapping - only actual neighbors)
     fn get_neighbor_zone_heat(&self, zx: usize, zy: usize, cols: usize, rows: usize) -> f32 {
         let mut total_heat = 0.0;
         let mut count = 0;
@@ -755,9 +815,16 @@ impl LifeField {
                 if dx == 0 && dy == 0 {
                     continue;
                 }
-                let nx = (zx as isize + dx).rem_euclid(cols as isize) as usize;
-                let ny = (zy as isize + dy).rem_euclid(rows as isize) as usize;
-                let nidx = ny * cols + nx;
+                // Only count actual neighbors, don't wrap around
+                let nx = zx as isize + dx;
+                let ny = zy as isize + dy;
+
+                // Check bounds - skip if outside the grid
+                if nx < 0 || nx >= cols as isize || ny < 0 || ny >= rows as isize {
+                    continue;
+                }
+
+                let nidx = ny as usize * cols + nx as usize;
                 if nidx < self.zones.len() {
                     total_heat += self.zones[nidx].heat;
                     count += 1;
@@ -772,10 +839,23 @@ impl LifeField {
         }
     }
 
+    /// Calculate global density (percentage of live cells)
+    fn global_density(&self) -> f32 {
+        let live_cells = self.cells.iter().filter(|&&c| c).count();
+        live_cells as f32 / self.cells.len() as f32
+    }
+
     /// Check if injection should happen and perform it
     pub fn maybe_inject(&mut self) {
         // Only check every N generations
         if self.generation % self.config.check_interval != 0 {
+            return;
+        }
+
+        // Don't inject if board is already too dense
+        let global_density = self.global_density();
+        if global_density > 0.15 {
+            // Was 0.30 - 15% cap
             return;
         }
 
@@ -809,6 +889,9 @@ impl LifeField {
 
         // Place pattern with possible mutation
         self.place_pattern(&pattern, &placement);
+
+        // Record injection
+        self.zones[zone_idx].last_injection_generation = self.generation;
 
         // Apply cooldown
         let cooldown_range = self.config.zone_cooldown_min..=self.config.zone_cooldown_max;
@@ -942,6 +1025,218 @@ impl LifeField {
                 self.cells[idx] = true;
             }
         }
+    }
+
+    /// Remove cells from high-density zones to prevent local sprawl
+    fn prune_dense_areas(&mut self) {
+        use rand::seq::IteratorRandom;
+
+        let global_density = self.global_density();
+        let zone_cols = (self.width + self.config.zone_width - 1) / self.config.zone_width;
+        let zone_rows = (self.height + self.config.zone_height - 1) / self.config.zone_height;
+
+        // When global density exceeds 15%, use random global pruning to create "holes"
+        // This preserves clusters while creating empty patches (starfield effect)
+        if global_density > 0.15 {
+            let total_cells = self.width * self.height;
+            let target_cells = (total_cells as f32 * 0.12) as usize; // Target 12% density
+            let current_live: usize = self.cells.iter().filter(|&&c| c).count();
+
+            if current_live > target_cells {
+                let to_remove_total = current_live - target_cells;
+                // Remove randomly across entire board to create voids
+                let all_live: Vec<usize> = self
+                    .cells
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &c)| c)
+                    .map(|(i, _)| i)
+                    .collect();
+
+                let mut rng = &mut self.rng;
+                for idx in all_live
+                    .iter()
+                    .sample(&mut rng, to_remove_total.min(all_live.len()))
+                {
+                    self.cells[*idx] = false;
+                }
+            }
+            return;
+        }
+
+        // Normal zone-based pruning for locally dense zones
+        for zy in 0..zone_rows {
+            for zx in 0..zone_cols {
+                let zone_idx = zy * zone_cols + zx;
+                let zone = &self.zones[zone_idx];
+
+                if zone.density < self.config.prune_density_threshold {
+                    continue;
+                }
+
+                // Calculate zone bounds
+                let x_start = zx * self.config.zone_width;
+                let y_start = zy * self.config.zone_height;
+                let x_end = (x_start + self.config.zone_width).min(self.width);
+                let y_end = (y_start + self.config.zone_height).min(self.height);
+
+                // Collect live cells in this zone
+                let mut live_cells: Vec<(usize, usize)> = Vec::new();
+                for y in y_start..y_end {
+                    for x in x_start..x_end {
+                        let idx = y * self.width + x;
+                        if self.cells[idx] {
+                            live_cells.push((x, y));
+                        }
+                    }
+                }
+
+                // Randomly remove a percentage of cells
+                let to_remove = (live_cells.len() as f32 * self.config.prune_percentage) as usize;
+                let mut rng = &mut self.rng;
+                for (x, y) in live_cells.iter().sample(&mut rng, to_remove) {
+                    let idx = y * self.width + x;
+                    self.cells[idx] = false;
+                }
+            }
+        }
+    }
+
+    /// Periodically rebalance cell distribution to prevent drift accumulation
+    fn rebalance(&mut self) {
+        if self.generation % self.config.rebalance_interval != 0 {
+            return;
+        }
+
+        // Count cells in each third
+        let third_width = self.width / 3;
+        let left_count = self.count_cells_in_region(0, third_width);
+        let center_count = self.count_cells_in_region(third_width, third_width * 2);
+        let right_count = self.count_cells_in_region(third_width * 2, self.width);
+
+        let total = left_count + center_count + right_count;
+        if total == 0 {
+            return;
+        }
+
+        let left_pct = left_count as f32 / total as f32;
+        let center_pct = center_count as f32 / total as f32;
+        let right_pct = right_count as f32 / total as f32;
+
+        // If any region has >40% of cells, prune it
+        let threshold = 0.40;
+        if left_pct > threshold {
+            let to_prune = ((left_pct - 0.33) * total as f32) as usize;
+            self.prune_region(0, third_width, to_prune);
+        }
+        if center_pct > threshold {
+            let to_prune = ((center_pct - 0.33) * total as f32) as usize;
+            self.prune_region(third_width, third_width * 2, to_prune);
+        }
+        if right_pct > threshold {
+            let to_prune = ((right_pct - 0.33) * total as f32) as usize;
+            self.prune_region(third_width * 2, self.width, to_prune);
+        }
+    }
+
+    /// Count live cells in a horizontal region [x_start, x_end)
+    fn count_cells_in_region(&self, x_start: usize, x_end: usize) -> usize {
+        let x_start = x_start.min(self.width);
+        let x_end = x_end.min(self.width);
+        if x_start >= x_end {
+            return 0;
+        }
+
+        let mut count = 0;
+        for y in 0..self.height {
+            for x in x_start..x_end {
+                let idx = y * self.width + x;
+                if self.cells[idx] {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    /// Prune random cells from a horizontal region [x_start, x_end)
+    fn prune_region(&mut self, x_start: usize, x_end: usize, count: usize) {
+        use rand::seq::IteratorRandom;
+
+        let x_start = x_start.min(self.width);
+        let x_end = x_end.min(self.width);
+        if x_start >= x_end || count == 0 {
+            return;
+        }
+
+        // Collect live cells in the region
+        let mut live_cells: Vec<usize> = Vec::new();
+        for y in 0..self.height {
+            for x in x_start..x_end {
+                let idx = y * self.width + x;
+                if self.cells[idx] {
+                    live_cells.push(idx);
+                }
+            }
+        }
+
+        // Randomly remove 'count' cells (or all if fewer available)
+        let to_remove = count.min(live_cells.len());
+        let mut rng = &mut self.rng;
+        for idx in live_cells.iter().sample(&mut rng, to_remove) {
+            self.cells[*idx] = false;
+        }
+    }
+
+    /// Get the current generation counter
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Get field dimensions
+    pub fn dimensions(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+
+    /// Get all live cell positions
+    pub fn live_cells(&self) -> Vec<(usize, usize)> {
+        let mut cells = Vec::new();
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let idx = y * self.width + x;
+                if idx < self.cells.len() && self.cells[idx] {
+                    cells.push((x, y));
+                }
+            }
+        }
+        cells
+    }
+
+    /// Get the number of live cells
+    pub fn live_cell_count(&self) -> usize {
+        self.cells.iter().filter(|&&c| c).count()
+    }
+
+    /// Get zone statistics for debugging
+    pub fn zone_stats(&self) -> Vec<((usize, usize), ZoneStats)> {
+        let zone_cols = (self.width + self.config.zone_width - 1) / self.config.zone_width;
+        let zone_rows = (self.height + self.config.zone_height - 1) / self.config.zone_height;
+
+        let mut result = Vec::new();
+        for zy in 0..zone_rows {
+            for zx in 0..zone_cols {
+                let zone_idx = zy * zone_cols + zx;
+                if zone_idx < self.zones.len() {
+                    result.push(((zx, zy), self.zones[zone_idx]));
+                }
+            }
+        }
+        result
+    }
+
+    /// Get configuration
+    pub fn config(&self) -> &LifeConfig {
+        &self.config
     }
 }
 
