@@ -21,6 +21,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
     LeaveAlternateScreen,
 };
+use chrono::NaiveDateTime;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -172,6 +173,7 @@ struct ThreadView {
     action: String,
     state: ThreadState,
     updated_at: String,
+    updated_timestamp: String, // Full timestamp for sorting (not display)
     episodes: i64,
     summary: String,
 }
@@ -995,6 +997,7 @@ impl App {
                         .unwrap_or_else(|| "retained history".to_string()),
                     state: ThreadState::Idle,
                     updated_at: short_clock(&thread.updated_at),
+                    updated_timestamp: thread.updated_at.clone(),
                     episodes: thread.episode_count,
                     summary: format!("{} episode(s)", thread.episode_count),
                 });
@@ -1003,6 +1006,7 @@ impl App {
                     entry.action = action;
                 }
                 entry.updated_at = short_clock(&thread.updated_at);
+                entry.updated_timestamp = thread.updated_at.clone();
                 entry.episodes = thread.episode_count;
                 entry.summary = format!("{} episode(s)", thread.episode_count);
             }
@@ -1159,6 +1163,7 @@ impl App {
                         action: action.clone(),
                         state: ThreadState::Active,
                         updated_at: utc_hms(),
+                        updated_timestamp: utc_timestamp(),
                         episodes: self
                             .threads
                             .get(&name)
@@ -1195,11 +1200,13 @@ impl App {
                         action: "thread run".to_string(),
                         state: ThreadState::Idle,
                         updated_at: utc_hms(),
+                        updated_timestamp: utc_timestamp(),
                         episodes: 0,
                         summary: String::new(),
                     });
                 entry.state = ThreadState::Idle;
                 entry.updated_at = utc_hms();
+                entry.updated_timestamp = utc_timestamp();
                 entry.summary = if timed_out {
                     "timed out".to_string()
                 } else {
@@ -1231,6 +1238,7 @@ impl App {
                 Some(thread_name) => {
                     if let Some(thread) = self.threads.get_mut(&thread_name) {
                         thread.updated_at = utc_hms();
+                        thread.updated_timestamp = utc_timestamp();
                         thread.summary = truncate_episode_preview(&content);
                     }
                     self.push_timeline(
@@ -1952,7 +1960,15 @@ impl App {
         threads.sort_by(|left, right| {
             matches!(right.state, ThreadState::Active)
                 .cmp(&matches!(left.state, ThreadState::Active))
-                .then_with(|| right.updated_at.cmp(&left.updated_at))
+                .then_with(|| {
+                    // Parse timestamps as DateTime objects for proper chronological comparison
+                    let left_dt = NaiveDateTime::parse_from_str(&left.updated_timestamp, "%Y-%m-%d %H:%M:%S");
+                    let right_dt = NaiveDateTime::parse_from_str(&right.updated_timestamp, "%Y-%m-%d %H:%M:%S");
+                    match (left_dt, right_dt) {
+                        (Ok(l), Ok(r)) => r.cmp(&l), // Most recent first
+                        _ => right.updated_timestamp.cmp(&left.updated_timestamp), // Fallback to string comparison
+                    }
+                })
                 .then_with(|| left.name.cmp(&right.name))
         });
 
@@ -4594,6 +4610,53 @@ fn utc_hms() -> String {
     let minutes = (rem % 3_600) / 60;
     let seconds = rem % 60;
     format!("{hours:02}:{minutes:02}:{seconds:02}")
+}
+
+fn utc_timestamp() -> String {
+    let now = std::time::SystemTime::now();
+    let duration = now.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let secs = duration.as_secs();
+    
+    // Convert to datetime components (UTC)
+    let secs_per_day: u64 = 86_400;
+    let days_since_epoch = secs / secs_per_day;
+    let secs_of_day = secs % secs_per_day;
+    
+    let hours = secs_of_day / 3_600;
+    let minutes = (secs_of_day % 3_600) / 60;
+    let seconds = secs_of_day % 60;
+    
+    // Approximate year/month/day calculation
+    let mut year = 1970;
+    let mut days_remaining = days_since_epoch;
+    
+    // Account for years
+    loop {
+        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
+        if days_remaining < days_in_year {
+            break;
+        }
+        days_remaining -= days_in_year;
+        year += 1;
+    }
+    
+    // Account for months
+    let month_days = [31, if is_leap_year(year) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 1;
+    for days_in_month in month_days {
+        if days_remaining < days_in_month {
+            break;
+        }
+        days_remaining -= days_in_month;
+        month += 1;
+    }
+    let day = days_remaining + 1;
+    
+    format!("{year:04}-{month:02}-{day:02} {hours:02}:{minutes:02}:{seconds:02}")
+}
+
+fn is_leap_year(year: u64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
 fn tone_glyph(tone: Tone) -> &'static str {
