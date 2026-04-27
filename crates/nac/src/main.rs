@@ -131,9 +131,29 @@ struct ResumeCli {
     last: bool,
 }
 
+#[derive(Parser)]
+#[command(name = "nac config", about = "manage nac configuration")]
+struct ConfigCli {
+    #[command(subcommand)]
+    command: ConfigCommand,
+}
+
+#[derive(Parser)]
+enum ConfigCommand {
+    /// Reload configuration from disk
+    Reload,
+    /// Show current configuration
+    Show,
+    /// Initialize default configuration file
+    Init,
+    /// Get the path to the configuration file
+    Path,
+}
+
 enum ParsedCli {
     Run(RunCli),
     Resume(ResumeCli),
+    Config(ConfigCli),
 }
 
 struct ManagedWorkerConfig {
@@ -168,6 +188,11 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let cli = parse_cli();
+
+    // Handle config commands early, before building run state
+    if let ParsedCli::Config(config_cli) = &cli {
+        return handle_config_command(&config_cli.command).await;
+    }
 
     if let ParsedCli::Run(run_cli) = &cli {
         if let Some(dir) = run_cli.directory.as_ref() {
@@ -233,6 +258,22 @@ async fn run() -> Result<()> {
                     };
                     continue;
                 }
+                TuiOutcome::Reload => {
+                    // Reload configuration and rebuild run_state for current session
+                    use nac::config::reload_global_config;
+                    match reload_global_config() {
+                        Ok(_) => {}
+                        Err(e) => eprintln!("Warning: failed to reload config: {}", e),
+                    }
+                    // Rebuild run_state to pick up new config and recreate agent
+                    let session_id = run_state.run_config.session_id.clone()
+                        .expect("TUI reload requires a session_id");
+                    run_state = RunState {
+                        run_config: build_resume_config_for_session(&session_id).await?,
+                        start_in_session_picker: false,
+                    };
+                    continue;
+                }
             }
         }
 
@@ -259,6 +300,14 @@ fn parse_cli_from(args: Vec<OsString>) -> ParsedCli {
         resume_args.push(args[0].clone());
         resume_args.extend(args.into_iter().skip(2));
         ParsedCli::Resume(ResumeCli::parse_from(resume_args))
+    } else if args
+        .get(1)
+        .is_some_and(|value| value == OsStr::new("config"))
+    {
+        let mut config_args = Vec::with_capacity(args.len().saturating_sub(1));
+        config_args.push(args[0].clone());
+        config_args.extend(args.into_iter().skip(2));
+        ParsedCli::Config(ConfigCli::parse_from(config_args))
     } else {
         ParsedCli::Run(RunCli::parse_from(args))
     }
@@ -288,6 +337,87 @@ async fn build_run_state(cli: ParsedCli) -> Result<RunState> {
             run_config: build_resume_config(cli).await?,
             start_in_session_picker: false,
         }),
+        ParsedCli::Config(_) => {
+            anyhow::bail!("config commands should be handled before build_run_state")
+        }
+    }
+}
+
+/// Handle config subcommands
+async fn handle_config_command(command: &ConfigCommand) -> Result<()> {
+    use nac::config::{ConfigManager, generate_sample_config, reload_global_config};
+    
+    match command {
+        ConfigCommand::Reload => {
+            let config = reload_global_config()?;
+            println!("Configuration reloaded successfully");
+            println!("Config path: {}", ConfigManager::find_config_path()?.display());
+            
+            // Show which backends are configured
+            let mut backends = Vec::new();
+            if config.api.openai.as_ref().and_then(|c| c.api_key.as_ref()).is_some() {
+                backends.push("openai");
+            }
+            if config.api.anthropic.as_ref().and_then(|c| c.api_key.as_ref()).is_some() {
+                backends.push("anthropic");
+            }
+            if config.api.google.as_ref().and_then(|c| c.api_key.as_ref()).is_some() {
+                backends.push("google");
+            }
+            if config.api.ollama.as_ref().and_then(|c| c.base_url.as_ref()).is_some() {
+                backends.push("ollama");
+            }
+            
+            if backends.is_empty() {
+                println!("Warning: No API backends configured");
+            } else {
+                println!("Configured backends: {}", backends.join(", "));
+            }
+            
+            Ok(())
+        }
+        ConfigCommand::Show => {
+            let config_path = ConfigManager::find_config_path()?;
+            
+            if config_path.exists() {
+                let content = std::fs::read_to_string(&config_path)?;
+                println!("# Configuration from: {}", config_path.display());
+                println!();
+                println!("{}", content);
+            } else {
+                println!("# No configuration file found at: {}", config_path.display());
+                println!("# Run `nac config init` to create a default configuration file");
+            }
+            
+            Ok(())
+        }
+        ConfigCommand::Init => {
+            let config_path = ConfigManager::find_config_path()?;
+            
+            if config_path.exists() {
+                println!("Configuration file already exists at: {}", config_path.display());
+                println!("Run `nac config show` to view it");
+                return Ok(());
+            }
+            
+            // Ensure parent directory exists
+            if let Some(parent) = config_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            
+            let sample = generate_sample_config();
+            std::fs::write(&config_path, sample)?;
+            
+            println!("Created default configuration file at: {}", config_path.display());
+            println!("Edit this file to configure your API keys and preferences");
+            
+            Ok(())
+        }
+        ConfigCommand::Path => {
+            let config_path = ConfigManager::find_config_path()?;
+            println!("{}", config_path.display());
+            Ok(())
+        }
     }
 }
 

@@ -7,6 +7,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use url::Url;
 
+use crate::config;
 use crate::types::{FunctionCall, Message, ToolCall, ToolDefinition, Usage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
@@ -351,8 +352,9 @@ fn api_key_for_backend(backend: BackendKind) -> Result<String> {
         BackendKind::Auto
         | BackendKind::DeepSeekChat
         | BackendKind::FireworksChat
-        | BackendKind::OpenAiResponses => std::env::var("OPENAI_API_KEY")
-            .map_err(|_| anyhow!("OPENAI_API_KEY environment variable is not set")),
+        | BackendKind::OpenAiResponses => {
+            config::get_api_key("openai").ok_or_else(|| anyhow!("OpenAI API key not configured. Set api.openai.api_key in your config file."))
+        }
     }
 }
 

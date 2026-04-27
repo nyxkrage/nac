@@ -628,6 +628,13 @@ impl App {
                 AppAction::Quit
             }
             KeyEvent {
+                code: KeyCode::Char('r'),
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::CONTROL) => {
+                AppAction::Reload
+            }
+            KeyEvent {
                 code: KeyCode::Char('?'),
                 ..
             } if self.prompt().is_empty() => {
@@ -2636,6 +2643,7 @@ enum AppAction {
     Quit,
     Submit(String),
     ResumeSession(String),
+    Reload,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2651,6 +2659,7 @@ enum SlashCommand {
 pub enum TuiOutcome {
     Exit,
     ResumeSession(String),
+    Reload,
 }
 
 pub async fn run(
@@ -2711,6 +2720,10 @@ pub async fn run(
                                 }
                                 AppAction::ResumeSession(session_id) => {
                                     outcome = TuiOutcome::ResumeSession(session_id);
+                                    app.quit = true;
+                                }
+                                AppAction::Reload => {
+                                    outcome = TuiOutcome::Reload;
                                     app.quit = true;
                                 }
                                 AppAction::Quit | AppAction::None => {}

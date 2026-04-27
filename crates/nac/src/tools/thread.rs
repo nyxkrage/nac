@@ -7,12 +7,11 @@ use tokio::process::Command;
 use tokio::time::timeout;
 
 use crate::api::ModelClient;
+use crate::config;
 use crate::events::{decode_stderr_event, AgentEvent};
 use crate::store;
 use crate::tools::{require_str, require_string_array, ToolResult, ToolRuntime};
 use crate::types::ToolDefinition;
-
-const DEFAULT_THREAD_TIMEOUT_SECS: u64 = 60 * 60;
 
 pub fn dispatch_definition() -> ToolDefinition {
     use serde_json::json;
@@ -113,12 +112,7 @@ pub async fn execute_dispatch(
     let timeout_secs: u64 = args
         .get("timeout")
         .and_then(|v| v.as_u64())
-        .or_else(|| {
-            std::env::var("AGENT_THREAD_TIMEOUT")
-                .ok()
-                .and_then(|v| v.parse().ok())
-        })
-        .unwrap_or(DEFAULT_THREAD_TIMEOUT_SECS);
+        .unwrap_or_else(config::get_thread_timeout);
 
     runtime.event_sink.emit(AgentEvent::ThreadStarted {
         name: thread_name.clone(),

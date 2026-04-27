@@ -3,6 +3,7 @@ use std::sync::Mutex;
 pub mod agent;
 pub mod agents_md;
 pub mod api;
+pub mod config;
 pub mod events;
 pub mod life;
 pub mod mcp;
