@@ -16,4 +16,6 @@ pub mod tools;
 pub mod tui;
 pub mod types;
 
+pub mod terminal;
+
 pub static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());

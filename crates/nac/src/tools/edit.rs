@@ -153,6 +153,7 @@ mod tests {
     use tokio::sync::Mutex;
 
     use crate::events::EventSink;
+    use crate::terminal::TerminalManager;
 
     async fn write_temp(content: &str) -> PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -173,6 +174,7 @@ mod tests {
             mcp: None,
             skills: None,
             activated_skills: Arc::new(Mutex::new(HashSet::new())),
+            terminal_manager: TerminalManager::new(),
         }
     }
 

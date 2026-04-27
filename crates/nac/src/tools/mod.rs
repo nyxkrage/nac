@@ -9,11 +9,17 @@ use crate::events::EventSink;
 use crate::mcp::McpRegistry;
 use crate::sandbox::SandboxSession;
 use crate::skills::SkillRegistry;
+use crate::terminal::TerminalManager;
 use crate::types::ToolDefinition;
 
 pub mod bash;
 pub mod edit;
 pub mod read;
+pub mod terminal_close;
+pub mod terminal_create;
+pub mod terminal_read;
+pub mod terminal_resize;
+pub mod terminal_send;
 pub mod thread;
 pub mod workset;
 pub mod write;
@@ -33,6 +39,7 @@ pub struct ToolRuntime {
     pub mcp: Option<Arc<McpRegistry>>,
     pub skills: Option<Arc<SkillRegistry>>,
     pub activated_skills: Arc<Mutex<HashSet<String>>>,
+    pub terminal_manager: TerminalManager,
 }
 
 static WRITE_LOCK: Mutex<()> = Mutex::const_new(());
@@ -95,6 +102,11 @@ pub fn worker_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["command"]
             }),
         ),
+        terminal_close::definition(),
+        terminal_create::definition(),
+        terminal_read::definition(),
+        terminal_resize::definition(),
+        terminal_send::definition(),
     ]
 }
 
@@ -179,6 +191,11 @@ pub async fn execute_tool(
         "write" => write::execute(args, runtime).await,
         "edit" => edit::execute(args, runtime).await,
         "bash" => bash::execute(args, runtime).await,
+        "terminal_close" => terminal_close::execute(args, runtime, &runtime.terminal_manager).await,
+        "terminal_create" => terminal_create::execute(args, runtime, &runtime.terminal_manager).await,
+        "terminal_read" => terminal_read::execute(args, runtime, &runtime.terminal_manager).await,
+        "terminal_resize" => terminal_resize::execute(args, runtime, &runtime.terminal_manager).await,
+        "terminal_send" => terminal_send::execute(args, runtime, &runtime.terminal_manager).await,
         "thread" => thread::execute_dispatch(args, runtime, client).await,
         "threads" => thread::execute_threads(runtime).await,
         "thread_read" => thread::execute_thread_read(args, runtime).await,

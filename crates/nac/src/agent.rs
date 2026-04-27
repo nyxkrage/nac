@@ -11,6 +11,7 @@ use crate::events::{AgentEvent, EventSink};
 use crate::mcp::McpRegistry;
 use crate::sandbox::SandboxSession;
 use crate::skills::SkillRegistry;
+use crate::terminal::TerminalManager;
 use crate::tools::{self, ToolResult, ToolRuntime};
 use crate::types::{Message, ToolCall, ToolDefinition};
 
@@ -200,6 +201,7 @@ impl Agent {
                 mcp: config.mcp,
                 skills: config.skills,
                 activated_skills: Arc::new(Mutex::new(HashSet::new())),
+                terminal_manager: TerminalManager::new(),
             },
             event_sink: config.event_sink,
             thread_name: config.thread_name,

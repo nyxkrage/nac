@@ -97,6 +97,7 @@ mod tests {
 
     use super::*;
     use crate::events::EventSink;
+    use crate::terminal::TerminalManager;
     use tokio::sync::Mutex;
 
     fn local_runtime() -> ToolRuntime {
@@ -109,6 +110,7 @@ mod tests {
             mcp: None,
             skills: None,
             activated_skills: Arc::new(Mutex::new(HashSet::new())),
+            terminal_manager: TerminalManager::new(),
         }
     }
 
