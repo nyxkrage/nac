@@ -36,6 +36,7 @@ use crate::events::{AgentEvent, EventSink};
 use crate::life::LifeField;
 use crate::sessions::{self, SessionSnapshot};
 use crate::store;
+use crate::terminal::{self, manager::TerminalInfo};
 use crate::types::Message;
 
 const COMPOSER_HEIGHT: u16 = 6;
@@ -45,6 +46,7 @@ const TIMELINE_LIMIT: usize = 220;
 const TOOL_HISTORY_LIMIT: usize = 20;
 const FILE_CHANGE_LIMIT: usize = 36;
 const WORKSPACE_REFRESH_INTERVAL: Duration = Duration::from_millis(400);
+const TERMINAL_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const PROMPT_SEPARATOR: &str = " › ";
 const COMMAND_SEPARATOR: &str = " / ";
 const CONTINUATION_PREFIX: &str = "   ";
@@ -154,6 +156,7 @@ enum PanelId {
     PreviousResponse,
     Workspace,
     Tools,
+    Terminals,
     Worksets,
     FileChanges,
 }
@@ -228,6 +231,21 @@ struct WorkspaceSnapshot {
 #[derive(Debug, Clone, Default)]
 struct WorksetSnapshot {
     items: Vec<store::WorksetRecord>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct TerminalDisplayInfo {
+    name: String,
+    owner: Option<String>,
+    state: crate::terminal::runner::CommandState,
+    current_command: Option<String>,
+    last_exit_code: Option<i32>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TerminalsSnapshot {
+    terminals: Vec<TerminalDisplayInfo>,
     error: Option<String>,
 }
 
@@ -413,6 +431,7 @@ enum FocusPanel {
     Response,
     PreviousResponse,
     Tools,
+    Terminals,
     Worksets,
     FileChanges,
 }
@@ -459,6 +478,7 @@ struct App {
     recent_tools: VecDeque<ToolRecord>,
     workspace: WorkspaceSnapshot,
     worksets: WorksetSnapshot,
+    terminals: TerminalsSnapshot,
     last_workspace_refresh_at: Instant,
     panel_scrolls: HashMap<PanelId, usize>,
     panel_views: HashMap<PanelId, PanelView>,
@@ -488,6 +508,7 @@ impl App {
         panel_scrolls.insert(PanelId::PreviousResponse, 0);
         panel_scrolls.insert(PanelId::Workspace, 0);
         panel_scrolls.insert(PanelId::Tools, 0);
+        panel_scrolls.insert(PanelId::Terminals, 0);
         panel_scrolls.insert(PanelId::Worksets, 0);
         panel_scrolls.insert(PanelId::FileChanges, 0);
 
@@ -512,6 +533,7 @@ impl App {
             recent_tools: VecDeque::new(),
             workspace,
             worksets,
+            terminals: TerminalsSnapshot::default(),
             last_workspace_refresh_at: Instant::now(),
             panel_scrolls,
             panel_views: HashMap::new(),
@@ -695,11 +717,19 @@ impl App {
                 modifiers,
                 ..
             } if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.toggle_focus_panel(FocusPanel::Worksets);
+                self.toggle_focus_panel(FocusPanel::Terminals);
                 AppAction::None
             }
             KeyEvent {
                 code: KeyCode::Char('8'),
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.toggle_focus_panel(FocusPanel::Worksets);
+                AppAction::None
+            }
+            KeyEvent {
+                code: KeyCode::Char('9'),
                 modifiers,
                 ..
             } if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -953,6 +983,7 @@ impl App {
             ScreenMode::Focused(FocusPanel::Response) => PanelId::Response,
             ScreenMode::Focused(FocusPanel::PreviousResponse) => PanelId::PreviousResponse,
             ScreenMode::Focused(FocusPanel::Tools) => PanelId::Tools,
+            ScreenMode::Focused(FocusPanel::Terminals) => PanelId::Terminals,
             ScreenMode::Focused(FocusPanel::Worksets) => PanelId::Worksets,
             ScreenMode::Focused(FocusPanel::FileChanges) => PanelId::FileChanges,
             _ => PanelId::Response,
@@ -1030,6 +1061,23 @@ impl App {
             &self.metadata.store_path,
             self.metadata.session_id.as_deref(),
         );
+    }
+
+    fn update_terminals(&mut self, terminals: Vec<crate::terminal::manager::TerminalInfo>) {
+        self.terminals = TerminalsSnapshot {
+            terminals: terminals.into_iter().map(|info| TerminalDisplayInfo {
+                name: info.name,
+                owner: info.owner,
+                state: info.command_state,
+                current_command: info.current_command,
+                last_exit_code: info.last_exit_code,
+            }).collect(),
+            error: None,
+        };
+    }
+
+    fn set_terminals_error(&mut self, error: String) {
+        self.terminals.error = Some(error);
     }
 
     fn maybe_refresh_workspace(&mut self) {
@@ -1370,6 +1418,7 @@ impl App {
                 FocusPanel::Tools => self.render_focused_tools(frame, sections[1]),
                 FocusPanel::Worksets => self.render_focused_worksets(frame, sections[1]),
                 FocusPanel::FileChanges => self.render_focused_file_changes(frame, sections[1]),
+                FocusPanel::Terminals => self.render_focused_events(frame, sections[1]),
             }
             self.render_composer(frame, sections[2]);
             if self.help_visible {
@@ -1808,14 +1857,16 @@ impl App {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(7),
-                Constraint::Min(8),
+                Constraint::Min(6),
+                Constraint::Min(6),
                 Constraint::Length(9),
             ])
             .split(area);
 
         self.render_tools_panel(frame, sections[0]);
-        self.render_worksets_panel(frame, sections[1]);
-        self.render_file_changes_panel(frame, sections[2]);
+        self.render_terminals_panel(frame, sections[1]);
+        self.render_worksets_panel(frame, sections[2]);
+        self.render_file_changes_panel(frame, sections[3]);
     }
 
     fn render_prompt_panel(&mut self, frame: &mut ratatui::Frame, area: Rect) {
@@ -1882,13 +1933,13 @@ impl App {
             ]),
             Line::from(vec![
                 Span::styled(
-                    "Ctrl+1-8",
+                    "Ctrl+1-9",
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    " focus panels (Prompt/Events/Threads/Response/Previous/Tools/Worksets/FileChanges)",
+                    " focus panels (Prompt/Events/Threads/Response/Previous/Tools/Terminals/Worksets/FileChanges)",
                     Style::default().fg(Color::White),
                 ),
             ]),
@@ -2149,6 +2200,72 @@ impl App {
         render_lines_panel(frame, area, "TOOLS - 6", lines);
     }
 
+    fn render_terminals_panel(&mut self, frame: &mut ratatui::Frame, area: Rect) {
+        let width = inner_width(area);
+        let state_width = 8usize;
+        let name_width = width.min(16).max(10);
+        let owner_width = width.saturating_sub(state_width + name_width + 8).max(8);
+        
+        let mut lines = vec![header_line(
+            &[
+                ("STATE", state_width),
+                ("NAME", name_width),
+                ("OWNER", owner_width),
+            ],
+            width,
+        )];
+
+        if let Some(error) = self.terminals.error.as_deref() {
+            lines.push(Line::from(Span::styled(
+                fit_text(error, width),
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else if self.terminals.terminals.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No terminals yet. Use the terminal tool to create one.",
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else {
+            for terminal in &self.terminals.terminals {
+                let (dot, tone) = match terminal.state {
+                    crate::terminal::runner::CommandState::Running => ("🟢", Tone::Success),
+                    crate::terminal::runner::CommandState::Idle => ("🔴", Tone::Error),
+                    crate::terminal::runner::CommandState::Completed => ("🟡", Tone::Warning),
+                };
+                
+                let owner_str = terminal.owner.as_deref().unwrap_or("available");
+                let name = fit_text(&terminal.name, name_width);
+                let owner = fit_text(owner_str, owner_width);
+                
+                lines.push(Line::from(vec![
+                    Span::styled(dot, Style::default().fg(tone.color())),
+                    Span::raw(" "),
+                    Span::raw(pad_cell(&name, name_width)),
+                    Span::raw("  "),
+                    Span::styled(
+                        pad_cell(&owner, owner_width),
+                        if terminal.owner.is_some() {
+                            Style::default().fg(Color::White)
+                        } else {
+                            Style::default().fg(Color::DarkGray)
+                        },
+                    ),
+                ]));
+                
+                // Show current command if available
+                if let Some(ref cmd) = terminal.current_command {
+                    let cmd_display = fit_text(&format!("  {}", cmd), width);
+                    lines.push(Line::from(Span::styled(
+                        cmd_display,
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
+            }
+        }
+
+        self.render_scrollable_lines_panel(frame, area, PanelId::Terminals, "TERMINALS - 7", lines);
+    }
+
     fn render_worksets_panel(&mut self, frame: &mut ratatui::Frame, area: Rect) {
         let width = inner_width(area);
         let kind_width = 6usize;
@@ -2221,7 +2338,7 @@ impl App {
             }
         }
 
-        self.render_scrollable_lines_panel(frame, area, PanelId::Worksets, "WORKSETS - 7", lines);
+        self.render_scrollable_lines_panel(frame, area, PanelId::Worksets, "WORKSETS - 8", lines);
     }
 
     fn render_file_changes_panel(&mut self, frame: &mut ratatui::Frame, area: Rect) {
@@ -2262,7 +2379,7 @@ impl App {
             }
         }
 
-        render_lines_panel(frame, area, "FILE CHANGES - 8", lines);
+        render_lines_panel(frame, area, "FILE CHANGES - 9", lines);
     }
 
     fn render_composer(&mut self, frame: &mut ratatui::Frame, area: Rect) {
@@ -2694,6 +2811,8 @@ pub async fn run(
     let mut app = App::new(metadata, &restored_messages, start_in_session_picker);
     let mut animation_tick = time::interval(Duration::from_millis(75));
     animation_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut terminal_refresh_tick = time::interval(TERMINAL_REFRESH_INTERVAL);
+    terminal_refresh_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     terminal.draw(|frame| app.render(frame))?;
 
     if let Some(prompt) = initial_prompt {
@@ -2772,6 +2891,24 @@ pub async fn run(
                         app.advance_life();
                     }
                     app.maybe_refresh_workspace();
+                }
+                _ = terminal_refresh_tick.tick() => {
+                    let agent_guard = agent.lock().await;
+                    let terminal_manager = agent_guard.terminal_manager();
+                    
+                    // Check for auto-unown (idle timeout) - runs every 500ms tick
+                    let _ = terminal_manager.check_auto_unown().await;
+                    
+                    match terminal_manager.list_terminals().await {
+                        Ok(terminals) => {
+                            drop(agent_guard);
+                            app.update_terminals(terminals);
+                        }
+                        Err(e) => {
+                            drop(agent_guard);
+                            app.set_terminals_error(e.to_string());
+                        }
+                    }
                 }
             }
 

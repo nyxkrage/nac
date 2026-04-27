@@ -195,6 +195,7 @@ impl Agent {
             tool_runtime: ToolRuntime {
                 store_path: config.store_path,
                 session_id: config.session_id,
+                thread_id: config.thread_name.clone().unwrap_or_else(|| format!("main_{}", std::process::id())),
                 active_threads: Arc::new(Mutex::new(HashSet::new())),
                 event_sink: config.event_sink.clone(),
                 sandbox: config.sandbox,
@@ -298,6 +299,13 @@ impl Agent {
                 self.emit(AgentEvent::RunFinished {
                     thread_name: self.thread_name.clone(),
                 });
+                
+                // Auto-unown all terminals checked out by this thread
+                let checked_in = self.tool_runtime.terminal_manager.checkin_all_by_owner(&self.tool_runtime.thread_id).await;
+                if !checked_in.is_empty() {
+                    eprintln!("[nac] Auto-unowned terminals on thread completion: {:?}", checked_in);
+                }
+                
                 return Ok(content);
             }
 
@@ -322,6 +330,10 @@ impl Agent {
     pub fn set_event_sink(&mut self, sink: EventSink) {
         self.event_sink = sink.clone();
         self.tool_runtime.event_sink = sink;
+    }
+
+    pub fn terminal_manager(&self) -> &TerminalManager {
+        &self.tool_runtime.terminal_manager
     }
 
     pub fn restore_messages(&mut self, messages: Vec<Message>) {

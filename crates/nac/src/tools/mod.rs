@@ -15,11 +15,7 @@ use crate::types::ToolDefinition;
 pub mod bash;
 pub mod edit;
 pub mod read;
-pub mod terminal_close;
-pub mod terminal_create;
-pub mod terminal_read;
-pub mod terminal_resize;
-pub mod terminal_send;
+pub mod terminal;
 pub mod thread;
 pub mod workset;
 pub mod write;
@@ -33,6 +29,7 @@ pub struct ToolResult {
 pub struct ToolRuntime {
     pub store_path: PathBuf,
     pub session_id: Option<String>,
+    pub thread_id: String,
     pub active_threads: Arc<Mutex<HashSet<String>>>,
     pub event_sink: EventSink,
     pub sandbox: Option<SandboxSession>,
@@ -102,11 +99,7 @@ pub fn worker_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["command"]
             }),
         ),
-        terminal_close::definition(),
-        terminal_create::definition(),
-        terminal_read::definition(),
-        terminal_resize::definition(),
-        terminal_send::definition(),
+        terminal::definition(),
     ]
 }
 
@@ -191,11 +184,7 @@ pub async fn execute_tool(
         "write" => write::execute(args, runtime).await,
         "edit" => edit::execute(args, runtime).await,
         "bash" => bash::execute(args, runtime).await,
-        "terminal_close" => terminal_close::execute(args, runtime, &runtime.terminal_manager).await,
-        "terminal_create" => terminal_create::execute(args, runtime, &runtime.terminal_manager).await,
-        "terminal_read" => terminal_read::execute(args, runtime, &runtime.terminal_manager).await,
-        "terminal_resize" => terminal_resize::execute(args, runtime, &runtime.terminal_manager).await,
-        "terminal_send" => terminal_send::execute(args, runtime, &runtime.terminal_manager).await,
+        "terminal" => terminal::execute(args, runtime, &runtime.terminal_manager).await,
         "thread" => thread::execute_dispatch(args, runtime, client).await,
         "threads" => thread::execute_threads(runtime).await,
         "thread_read" => thread::execute_thread_read(args, runtime).await,
