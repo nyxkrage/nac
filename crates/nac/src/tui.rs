@@ -21,7 +21,6 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
     LeaveAlternateScreen,
 };
-use chrono::NaiveDateTime;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -172,8 +171,8 @@ struct ThreadView {
     name: String,
     action: String,
     state: ThreadState,
-    updated_at: String,
-    updated_timestamp: String, // Full timestamp for sorting (not display)
+    updated_at: String,        // Human-readable display (e.g., "14:32:05")
+    updated_at_ts: u64,        // Unix timestamp for sorting
     episodes: i64,
     summary: String,
 }
@@ -986,6 +985,7 @@ impl App {
         };
 
         for thread in threads {
+            let ts = parse_timestamp_to_unix(&thread.updated_at).unwrap_or_else(current_unix_ts);
             let entry = self
                 .threads
                 .entry(thread.name.clone())
@@ -997,7 +997,7 @@ impl App {
                         .unwrap_or_else(|| "retained history".to_string()),
                     state: ThreadState::Idle,
                     updated_at: short_clock(&thread.updated_at),
-                    updated_timestamp: thread.updated_at.clone(),
+                    updated_at_ts: ts,
                     episodes: thread.episode_count,
                     summary: format!("{} episode(s)", thread.episode_count),
                 });
@@ -1006,7 +1006,7 @@ impl App {
                     entry.action = action;
                 }
                 entry.updated_at = short_clock(&thread.updated_at);
-                entry.updated_timestamp = thread.updated_at.clone();
+                entry.updated_at_ts = parse_timestamp_to_unix(&thread.updated_at).unwrap_or_else(current_unix_ts);
                 entry.episodes = thread.episode_count;
                 entry.summary = format!("{} episode(s)", thread.episode_count);
             }
@@ -1163,7 +1163,7 @@ impl App {
                         action: action.clone(),
                         state: ThreadState::Active,
                         updated_at: utc_hms(),
-                        updated_timestamp: utc_timestamp(),
+                        updated_at_ts: current_unix_ts(),
                         episodes: self
                             .threads
                             .get(&name)
@@ -1200,13 +1200,13 @@ impl App {
                         action: "thread run".to_string(),
                         state: ThreadState::Idle,
                         updated_at: utc_hms(),
-                        updated_timestamp: utc_timestamp(),
+                        updated_at_ts: current_unix_ts(),
                         episodes: 0,
                         summary: String::new(),
                     });
                 entry.state = ThreadState::Idle;
                 entry.updated_at = utc_hms();
-                entry.updated_timestamp = utc_timestamp();
+                entry.updated_at_ts = current_unix_ts();
                 entry.summary = if timed_out {
                     "timed out".to_string()
                 } else {
@@ -1238,7 +1238,7 @@ impl App {
                 Some(thread_name) => {
                     if let Some(thread) = self.threads.get_mut(&thread_name) {
                         thread.updated_at = utc_hms();
-                        thread.updated_timestamp = utc_timestamp();
+                        thread.updated_at_ts = current_unix_ts();
                         thread.summary = truncate_episode_preview(&content);
                     }
                     self.push_timeline(
@@ -1960,15 +1960,7 @@ impl App {
         threads.sort_by(|left, right| {
             matches!(right.state, ThreadState::Active)
                 .cmp(&matches!(left.state, ThreadState::Active))
-                .then_with(|| {
-                    // Parse timestamps as DateTime objects for proper chronological comparison
-                    let left_dt = NaiveDateTime::parse_from_str(&left.updated_timestamp, "%Y-%m-%d %H:%M:%S");
-                    let right_dt = NaiveDateTime::parse_from_str(&right.updated_timestamp, "%Y-%m-%d %H:%M:%S");
-                    match (left_dt, right_dt) {
-                        (Ok(l), Ok(r)) => r.cmp(&l), // Most recent first
-                        _ => right.updated_timestamp.cmp(&left.updated_timestamp), // Fallback to string comparison
-                    }
-                })
+                .then_with(|| right.updated_at_ts.cmp(&left.updated_at_ts)) // Numeric comparison, most recent first
                 .then_with(|| left.name.cmp(&right.name))
         });
 
@@ -4657,6 +4649,60 @@ fn utc_timestamp() -> String {
 
 fn is_leap_year(year: u64) -> bool {
     (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+/// Returns current Unix timestamp in seconds
+fn current_unix_ts() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// Parse a timestamp string (format: "YYYY-MM-DD HH:MM:SS") to Unix timestamp
+/// Returns None if parsing fails
+fn parse_timestamp_to_unix(ts: &str) -> Option<u64> {
+    // Expected format: "2026-04-23 14:32:05"
+    let parts: Vec<&str> = ts.split_whitespace().collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    
+    let date_parts: Vec<&str> = parts[0].split('-').collect();
+    let time_parts: Vec<&str> = parts[1].split(':').collect();
+    
+    if date_parts.len() != 3 || time_parts.len() != 3 {
+        return None;
+    }
+    
+    let year: u64 = date_parts[0].parse().ok()?;
+    let month: u64 = date_parts[1].parse().ok()?;
+    let day: u64 = date_parts[2].parse().ok()?;
+    let hour: u64 = time_parts[0].parse().ok()?;
+    let minute: u64 = time_parts[1].parse().ok()?;
+    let second: u64 = time_parts[2].parse().ok()?;
+    
+    // Convert to Unix timestamp (days since epoch * seconds per day + seconds of day)
+    let mut days_since_epoch: u64 = 0;
+    
+    // Count days for years from 1970 to year-1
+    for y in 1970..year {
+        days_since_epoch += if is_leap_year(y) { 366 } else { 365 };
+    }
+    
+    // Count days for months from January to month-1
+    let month_days = [31, if is_leap_year(year) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    for m in 0..(month - 1) as usize {
+        days_since_epoch += month_days[m];
+    }
+    
+    // Add days of current month (day is 1-indexed)
+    days_since_epoch += day - 1;
+    
+    let secs_per_day: u64 = 86_400;
+    let secs_of_day = hour * 3_600 + minute * 60 + second;
+    
+    Some(days_since_epoch * secs_per_day + secs_of_day)
 }
 
 fn tone_glyph(tone: Tone) -> &'static str {
